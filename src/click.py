@@ -1,4 +1,4 @@
-﻿import cv2
+import cv2
 import numpy as np
 from PyQt5.QtGui import QGuiApplication
 import time
@@ -7,6 +7,7 @@ import time
 template_path = "../assets/Battle_button.png"  # Battle button image
 retry_button_path = "../assets/Retry_button.png" # Retry button image
 upgrade_bar_path = "../assets/upgrade_bar.png" # Upgrade bar image
+upgrade_attack_path = "../assets/upgrade_attack.png" # Upgrade attack image
 gem_claim_path = "../assets/gem_claim.png" # gem claim image
 floating_gem_path = "../assets/floating_gem.png.png" # floating gem image
 
@@ -24,6 +25,8 @@ app = QGuiApplication.instance() or QGuiApplication([])
 
 SCALES = [1.0, 0.9, 0.8, 1.1, 1.2]
 YELLOW_MASTER_RGB = (41, 34, 44)
+YELLOW_FOLLOWUP_IN_PROGRESS = False
+is_on_attack = False
 
 def capture_screen():
     screen = QGuiApplication.primaryScreen()
@@ -74,8 +77,25 @@ def log_click_color(bgr, x, y, width, height):
         b, g, r = bgr[y, x]
         rgb = (int(r), int(g), int(b))
         print(f"Click target color (RGB): {rgb}")
-        if rgb == YELLOW_MASTER_RGB:
-            print("IT'S YELLOW MASTER!")
+        if not is_on_attack and rgb == YELLOW_MASTER_RGB:
+            trigger_upgrade_attack()
+
+def trigger_upgrade_attack():
+    global YELLOW_FOLLOWUP_IN_PROGRESS, is_on_attack
+    if YELLOW_FOLLOWUP_IN_PROGRESS:
+        return
+    if upgrade_attack_template is None:
+        return
+    YELLOW_FOLLOWUP_IN_PROGRESS = True
+    try:
+        print('Found yellow click attack')
+        time.sleep(1)
+        clicked = find_and_click(upgrade_attack_template, threshold=0.7)
+        if clicked:
+            is_on_attack = True
+        time.sleep(1)
+    finally:
+        YELLOW_FOLLOWUP_IN_PROGRESS = False
 
 def click_at(center_x, center_y):
     try:
@@ -130,6 +150,7 @@ def local_imread(filename):
 # Load templates
 retry_template = local_imread(retry_button_path)
 upgrade_bar_template = local_imread(upgrade_bar_path)
+upgrade_attack_template = local_imread(upgrade_attack_path)
 health_hack_template = local_imread(health_hack_path)
 gem_claim_template = local_imread(gem_claim_path)
 
@@ -140,11 +161,11 @@ try:
             print("Checking for Retry button...")
             found = find_and_click(retry_template, threshold=0.7)
             if found:
+                is_on_attack = False
                 time.sleep(2)
                 print("Checking for upgrade bar button...")
                 find_and_click(upgrade_bar_template, threshold=0.6)
                 time.sleep(1)
-                print("Clicked Retry, and upgrade bar button.")
         if health_hack_template is not None:
             print("Checking for running elements to click...")
             find_and_click(health_hack_template, threshold=0.7)

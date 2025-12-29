@@ -1,19 +1,64 @@
-# Repository Guidelines
+# AGENT Guidelines for `automite`
 
-## Project Structure & Module Organization
-Automite currently centers on `main.py`, which orchestrates cross-platform desktop automation. Keep supporting assets (e.g., toolbar screenshots for image matching) inside an `assets/` folder at the repository root and reference them by relative path. Place future modules under `automite/` and mirror that structure under `tests/` to keep automation helpers and their coverage aligned.
+These instructions apply to the entire repository rooted at `C:\Developer\automite`.
 
-## Build, Test, and Development Commands
-Use Python 3.10+. Create a virtual environment with `python3 -m venv .venv` and activate it (`source .venv/bin/activate` on macOS/Linux, `.venv\\Scripts\\activate` on Windows). Install runtime dependencies via `pip install pyautogui pywinctl mss opencv-python numpy`. Run the automation locally with `python3 main.py`. When adding developer tools, capture them in `requirements-dev.txt` and document any OS-level packages the automation expects.
+## Project Overview
 
-## Coding Style & Naming Conventions
-Follow PEP 8 for Python formatting, with black-compatible 88-character lines and 4-space indentation. Use descriptive snake_case for functions and lower_snake_case module names; reserve CapWords for classes. Prefer type hints on public call surfaces, and keep platform-specific logic behind helper functions such as `launch_editor()` to preserve clarity. Run `ruff check .` or `black .` before submitting if available in your toolchain.
+- Primary language: Python (desktop automation / screen interaction).
+- Entry point: `main.py` (PyQt overlay and global hotkeys).
+- Supporting automation script: `src/click.py` (OpenCV-based clicking).
+- Documentation lives in `docs/` (see `docs/tasks.md` for modernization roadmap).
+- Virtual environment lives in `.venv/` and should be treated as opaque.
 
-## Testing Guidelines
-Adopt `pytest` for new tests. Store them in `tests/test_<feature>.py`, mirroring module names. When feasible, isolate GUI-dependent routines behind adapters so they can be mocked in unit tests. For full-stack automation flows, add smoke scripts under `scripts/` that can be triggered manually. Target at least a smoke test per supported platform and document any skipped cases.
+## Directories and File Conventions
 
-## Commit & Pull Request Guidelines
-Write Conventional Commit messages (`feat:`, `fix:`, `chore:`) summarizing the user-facing impact. Each pull request should describe the motivation, list covered platforms, and note how the automation was validated (e.g., “Validated on macOS Sonoma”). Include screenshots or screen recordings when UI automation changes cursor paths or window assumptions. Link to related issues and call out follow-up work in a checklist.
+- `main.py`: Keep as the primary executable entry point. New application logic should go into modules under `src/` and be imported here, not implemented inline unless very small.
+- `src/`: Place reusable Python modules and automation helpers here. Prefer small, focused modules over very large files.
+- `assets/`: Image assets used for template matching and UI. Do not rename, move, or re-encode assets unless the change is clearly required and all references are updated.
+- `docs/`: Add or update documentation when user-visible behavior or workflows change.
+- Do not modify `.venv/` or `.idea/` content; treat them as environment/editor artifacts.
 
-## Automation Agent Notes
-This project requires an interactive desktop session—do not run in headless CI without a virtual display. Keep `pag.FAILSAFE` enabled and mention any intentional overrides. Before merging, confirm that window titles referenced in `wait_for_window()` are still accurate for the target platform.
+## Coding Style (Python)
+
+- Follow standard Python style (PEP 8) and keep changes minimal and focused on the requested task.
+- Prefer descriptive variable and function names; avoid single-letter names except for very local indices or coordinates.
+- Use functions and small classes to keep logic testable and composable; avoid large monolithic blocks in `main.py`.
+- Prefer `logging` for diagnostics and internal traces; reserve `print` for user-facing or debugging output that is explicitly desired.
+- When changing or adding behavior, prefer refactoring existing code over duplicating logic.
+
+## Behavior for Automated Agents
+
+- Make the smallest change that fully addresses the request; avoid broad refactors or reformatting unrelated code.
+- Preserve existing behavior unless a change is explicitly requested or clearly fixes a bug.
+- When introducing new dependencies, prefer standard library first; avoid adding heavy third-party libraries without clear justification.
+- Do not add or modify license headers unless explicitly requested.
+- Avoid editing binary/image assets directly; if new assets are required, document the expected filename, format, and purpose in `docs/` rather than generating them.
+
+## Testing and Running
+
+- Assume the project is run directly via `python main.py` from the repository root.
+- If you add non-trivial logic, consider structuring it so that it can be imported and unit-tested from under `src/` even if a test suite does not yet exist.
+- Do not introduce new test frameworks or CI configuration without an explicit request; instead, align with any future decisions recorded in `docs/tasks.md`.
+
+## Documentation Expectations
+
+- When you change user-visible behavior, update or create documentation under `docs/` (or docstrings) to reflect the new behavior.
+- Keep documentation concise and task-focused, mirroring the style in `docs/tasks.md`.
+
+## Safety & Environment
+
+- Assume Python 3.x and a local desktop environment with PyQt5, OpenCV, and numpy available (often via a virtual environment), but keep code portable across Windows, macOS, and Linux where feasible.
+- Treat this as desktop automation: default to conservative behavior and avoid adding code that clicks or types outside the intended game/target context unless explicitly requested.
+- Do not add background services, remote control features, or network calls without an explicit user request.
+
+## UX Invariants
+
+- Preserve the core overlay behavior: it should dim the background, show instructions, and allow quitting via `ESC` and `Q` unless the user explicitly asks to change that.
+- Keep user-facing text simple and informative; avoid noisy pop-ups or intrusive dialogs.
+- Keep logging informative but avoid overly verbose logging in tight loops or high-frequency events, especially in screen-capture or click routines.
+
+## Refactoring, Dependencies, and Configuration
+
+- Refactor only within the scope of the current task; avoid large structural changes, global renames, or moving many files unless explicitly requested.
+- Prefer reusing existing dependencies (PyQt5, OpenCV, numpy, pynput, pyautogui) and the Python standard library before introducing new third-party libraries.
+- Keep paths, thresholds, and similar “magic numbers” as module-level constants rather than scattering literals; if you introduce new configuration, group it clearly and document any user-facing effects.

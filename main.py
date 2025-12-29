@@ -1,202 +1,158 @@
-import platform, subprocess, time, sys
-import pywinctl as pwc
-import pyautogui as pag
+﻿import sys, threading, logging
+from PyQt5.QtCore import Qt, QRect, QPoint, QObject, pyqtSignal
+from PyQt5.QtGui import QPainter, QPen, QColor
+from PyQt5.QtWidgets import QApplication, QWidget
+from PyQt5.QtGui import QGuiApplication
 
-# Optional OpenCV-based image click
-try:
-    import cv2, numpy as np, mss
-    HAS_CV = True
-except Exception:
-    HAS_CV = False
+from pynput import keyboard
 
-pag.FAILSAFE = True   # move mouse to top-left to abort
-pag.PAUSE = 0.05      # tiny delay between actions
+class HotkeyBridge(QObject):
+    quitRequested = pyqtSignal()
 
-def launch_editor():
-    system = platform.system()
-    if system == "Windows":
-        return subprocess.Popen(["notepad.exe"])
-    elif system == "Darwin":
-        return subprocess.Popen(["open", "-a", "TextEdit"])
-    else:
-        # Try a few common editors on Linux
-        for cmd in (["gedit"], ["xed"], ["kate"], ["mousepad"]):
-            try:
-                return subprocess.Popen(cmd)
-            except FileNotFoundError:
-                continue
-        raise RuntimeError("No GUI editor found. Install gedit/xed/kate/mousepad.")
+def start_global_hotkeys(bridge: HotkeyBridge):
+    logging.info('Starting global hotkeys listener')
+    # Runs in a non-Qt thread. Emit signals back into the Qt thread.
+    def on_press(key):
+        try:
+            logging.info(f'Key pressed: {key}')
+            if isinstance(key, keyboard.KeyCode) and key.char and key.char.lower() == 'q':
+                bridge.quitRequested.emit()
+        except AttributeError:
+            pass  # non-char keys
+        # You can add more: e.g., ESC to quit
+        if key == keyboard.Key.esc:
+            logging.info('ESC pressed: quitting')
+            bridge.quitRequested.emit()
 
-def wait_for_window(title_substrings, timeout=15, app_hint: str | None = None):
-    """Wait for any window whose title contains provided substrings."""
-    system = platform.system()
-    deadline = time.time() + timeout
-    extra_titles: list[str] = []
-    while time.time() < deadline:
-        search_titles = list(title_substrings) + extra_titles
-        if system == "Darwin" and app_hint:
-            fallback_titles = _macos_window_titles(app_hint)
-            new_titles = [t for t in fallback_titles if t and t not in search_titles]
-            if new_titles:
-                search_titles.extend(new_titles)
-                extra_titles.extend([t for t in new_titles if t not in extra_titles])
-        for t in search_titles:
-            wins = find_windows_with_title(t, case_sensitive=False)
-            if wins:
-                w = wins[0]
-                if not w.isVisible:  # pywinctl tracks visibility
-                    try:
-                        w.restore()
-                    except Exception:
-                        pass
-                try:
-                    w.activate()
-                except Exception:
-                    pass
-                return w
-        time.sleep(0.2)
-    raise TimeoutError(f"Window not found for titles: {title_substrings}")
+    listener = keyboard.Listener(on_press=on_press)
+    listener.start()  # non-blocking
+    return listener
 
-def find_windows_with_title(title: str, case_sensitive: bool = False) -> list:
-    """Return window handles whose titles contain the requested substring."""
-    try:
-        windows = list(pwc.getWindowsWithTitle(title, caseSensitive=case_sensitive))
-    except TypeError:
-        windows = list(pwc.getWindowsWithTitle(title))
-    except AttributeError:
-        windows = []
+class Overlay(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Window)
+        logging.info('Window flags set to Frameless + StayOnTop + Window (not Tool) to accept input reliably')
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setMouseTracking(True)
 
-    if not windows:
-        target = title if case_sensitive else title.lower()
-        for window in pwc.getAllWindows():
-            window_title = window.title or ""
-            comparable = window_title if case_sensitive else window_title.lower()
-            if target in comparable:
-                windows.append(window)
-    return windows
+        union = None
+        for screen in QGuiApplication.screens():
+            union = screen.geometry() if union is None else union.united(screen.geometry())
+        self.setGeometry(union)
+        logging.info(f'Overlay geometry set to union of screens: {union}')
 
+        self.dragging = False
+        self.start = QPoint()
+        self.end = QPoint()
+        self.rect_color = QColor(0, 150, 255, 180)
+        self.fill_color = QColor(0, 150, 255, 50)
+        self.setCursor(Qt.CrossCursor)
 
-def get_matching_window_titles(
-    title: str,
-    case_sensitive: bool = False,
-    app_name: str | None = None,
-) -> list[str]:
-    """Return unique window titles matching the requested substring."""
-    windows = find_windows_with_title(title, case_sensitive=case_sensitive)
-    titles = sorted({w.title for w in windows if getattr(w, "title", None)})
-    if titles:
-        return titles
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.raise_()
+        self.activateWindow()
+        logging.info('Overlay shown; raised and activated')
+        self.show()
 
-    if platform.system() == "Darwin":
-        candidate = app_name or title
-        fallback_titles = _macos_window_titles(candidate)
-        if fallback_titles:
-            return sorted({t for t in fallback_titles if t})
+    def mousePressEvent(self, e):
+        logging.info(f'mousePressEvent: button={e.button()} globalPos={e.globalPos()} localPos={e.pos()}')
+        if e.button() == Qt.LeftButton:
+            self.dragging = True
+            self.start = e.globalPos()
+            self.end = e.globalPos()
+            self.update()
 
-    return []
+    def mouseMoveEvent(self, e):
+        if self.dragging:
+            logging.info(f'mouseMoveEvent while dragging: globalPos={e.globalPos()} localPos={e.pos()}')
+        if self.dragging:
+            self.end = e.globalPos()
+            self.update()
 
+    def mouseReleaseEvent(self, e):
+        logging.info(f'mouseReleaseEvent: button={e.button()} globalPos={e.globalPos()} localPos={e.pos()} dragging={self.dragging}')
+        if e.button() == Qt.LeftButton:
+            self.dragging = False
+            self.end = e.globalPos()
+            self.update()
+            logging.info(f'end draw: start {self.start}, end {self.end}')
+            print(f"end draw: start{self.start}, end:{self.end}")
 
-def _macos_window_titles(app_name: str) -> list[str]:
-    """Collect window titles for a macOS application via AppleScript."""
-    escaped_name = app_name.replace('"', '\"')
-    script = f"""
-    set targetName to "{escaped_name}"
-    tell application "System Events"
-        set appTitles to {{}}
-        repeat with proc in (application processes whose name contains targetName)
-            repeat with w in windows of proc
-                try
-                    set end of appTitles to (name of w as text)
-                end try
-            end repeat
-        end repeat
-        return appTitles
-    end tell
-    """
-    try:
-        result = subprocess.run(
-            ["osascript", "-e", script],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
-        print(f"AppleScript lookup failed for {app_name!r}:", exc, file=sys.stderr)
-        return []
+    def enterEvent(self, e):
+        logging.info('enterEvent: mouse entered overlay')
 
-    output = result.stdout.strip()
-    if not output:
-        return []
+    def leaveEvent(self, e):
+        logging.info('leaveEvent: mouse left overlay')
 
-    normalised = output.replace("\r", "\n")
-    return [line.strip() for line in normalised.split("\n") if line.strip()]
+    def focusInEvent(self, e):
+        logging.info('focusInEvent: overlay focused')
 
+    def focusOutEvent(self, e):
+        logging.info('focusOutEvent: overlay lost focus')
 
-
-def is_window_open(title: str, case_sensitive: bool = False) -> bool:
-    """Return True when a window containing the title substring is visible."""
-    return bool(get_matching_window_titles(title, case_sensitive=case_sensitive, app_name=title))
-
-def click_image_on_screen(template_path, confidence=0.92):
-    if not HAS_CV:
-        raise RuntimeError("OpenCV/mss not installed. `pip install opencv-python mss`")
-    with mss.mss() as sct:
-        img = np.array(sct.grab(sct.monitors[0]))[:, :, :3]  # drop alpha
-    template = cv2.imread(template_path)
-    if template is None:
-        raise FileNotFoundError(template_path)
-    res = cv2.matchTemplate(img, template, cv2.TM_CCOEFF_NORMED)
-    _, max_val, _, max_loc = cv2.minMaxLoc(res)
-    if max_val < confidence:
-        raise RuntimeError(f"Template not found (score={max_val:.3f} < {confidence})")
-    th, tw = template.shape[:2]
-    center = (max_loc[0] + tw // 2, max_loc[1] + th // 2)
-    pag.moveTo(center[0], center[1], duration=0.1)
-    pag.click()
-    return max_val
+    def paintEvent(self, _):
+        # draw dim background and selection rect; log rect
+        if self.start != self.end:
+            r = QRect(self.mapFromGlobal(self.start), self.mapFromGlobal(self.end)).normalized()
+            logging.info(f'paintEvent: drawing rect {r}')
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        # Always paint dim background so instructions are visible
+        p.fillRect(self.rect(), QColor(0, 0, 0, 80))
+        if self.start == self.end:
+            # draw instruction text even when idle
+            p.setPen(QPen(QColor(255, 255, 255, 220), 1))
+            p.drawText(10, 30, 'Drag with left mouse to select. Press ESC or Q to quit.')
+            return
+        r = QRect(self.mapFromGlobal(self.start), self.mapFromGlobal(self.end)).normalized()
+        p.fillRect(r, self.fill_color)
+        p.setPen(QPen(self.rect_color, 2))
+        p.drawRect(r)
+        # Instruction text
+        p.setPen(QPen(QColor(255, 255, 255, 220), 1))
+        p.drawText(10, 30, 'Drag with left mouse to select. Press ESC or Q to quit.')
 
 def main():
-    pycharm_titles = get_matching_window_titles("PyCharm", app_name="PyCharm")
-    if pycharm_titles:
-        print("PyCharm window detected:", pycharm_titles)
-    else:
-        print("No PyCharm window detected.")
-
-    proc = launch_editor()
-    system = platform.system()
-    titles = {
-        "Windows": ["Notepad"],
-        "Darwin": ["TextEdit"],
-        "Linux":  ["gedit", "Text Editor", "Kate", "Mousepad"],
-    }.get(system, [""])
-    app_hint = "TextEdit" if system == "Darwin" else None
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s [%(levelname)s] %(message)s',
+        handlers=[
+            logging.FileHandler('automite.log', mode='w', encoding='utf-8'),
+            logging.StreamHandler(sys.stdout)
+        ]
+    )
+    logging.info('Application starting')
+    app = QApplication(sys.argv)
     try:
-        w = wait_for_window(titles, app_hint=app_hint)
-    except TimeoutError as exc:
-        print(f"Window not found for titles {titles}: {exc}", file=sys.stderr)
-        return
+        screens = QGuiApplication.screens()
+        for i, s in enumerate(screens):
+            logging.info(f'Screen {i}: name={getattr(s, "name", lambda: "")()} geometry={s.geometry()}')
+    except Exception as ex:
+        logging.exception(f'Failed to enumerate screens: {ex}')
+    overlay = Overlay()
 
-    # Position and size
+    bridge = HotkeyBridge()
+    def on_quit():
+        logging.info('Quit requested via hotkey')
+        app.quit()
+    bridge.quitRequested.connect(on_quit)
+
+    # Start global hotkeys
+    listener = start_global_hotkeys(bridge)
+
+    # Run Qt event loop
+    logging.info('Entering Qt event loop')
+    exit_code = app.exec_()
+    logging.info(f'Qt event loop exited with code {exit_code}')
+
+    # Clean up listener on exit
     try:
-        w.moveTo(100, 100)
-        w.resizeTo(1000, 700)
-        w.activate()
-    except Exception as e:
-        print("Window move/resize failed:", e, file=sys.stderr)
-
-    time.sleep(0.3)
-    pag.typewrite("Hello from cross-platform Python automation! 🚀", interval=0.02)
-    pag.hotkey("ctrl", "s") if system == "Windows" else pag.hotkey("command", "s")
-
-    # Optional: click a toolbar button by image (put a PNG next to the script)
-    # try:
-    #     score = click_image_on_screen("bold_button.png", confidence=0.9)
-    #     print("Clicked image match with score:", score)
-    # except Exception as e:
-    #     print("Image click skipped:", e)
-
-    # Keep the editor open for a bit
-    time.sleep(1)
+        listener.stop()
+        logging.info('Global hotkeys listener stopped')
+    except Exception as ex:
+        logging.exception(f'Error stopping listener: {ex}')
+    sys.exit(exit_code)
 
 if __name__ == "__main__":
     main()
